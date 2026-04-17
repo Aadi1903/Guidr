@@ -1,0 +1,10 @@
+{
+  "name": "notification-worker",
+  "version": "1.0.0",
+  "description": "Guidr SQS consumer Lambda - processes notification queue and publishes via SNS/SES",
+  "main": "index.js",
+  "dependencies": {
+    "@aws-sdk/client-sns": "^3.0.0",
+    "@aws-sdk/client-ses": "^3.0.0"
+  }
+}
