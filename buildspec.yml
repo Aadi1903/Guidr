@@ -1,0 +1,50 @@
+version: 0.2
+
+env:
+  variables:
+    # These will fall back to empty strings if not specifically set in CodeBuild
+    # Ensure you set them in the CodeBuild project settings!
+    REGION: "us-east-1"
+  # We will pull sensitive variables directly from the CodeBuild environment config
+  # rather than hardcoding them here.
+
+phases:
+  install:
+    runtime-versions:
+      nodejs: 18
+    commands:
+      - echo "Installing dependencies..."
+      - apt-get update && apt-get install -y zip jq
+
+  pre_build:
+    commands:
+      - echo "Setting up environment variables for frontend..."
+      - cd frontend
+      # Dynamically recreate the .env file missed by .gitignore
+      - echo "VITE_API_URL=$VITE_API_URL" > .env
+      - echo "VITE_COGNITO_USER_POOL_ID=$VITE_COGNITO_USER_POOL_ID" >> .env
+      - echo "VITE_COGNITO_CLIENT_ID=$VITE_COGNITO_CLIENT_ID" >> .env
+      - echo "VITE_COGNITO_REGION=$REGION" >> .env
+      - cd ..
+
+  build:
+    commands:
+      - echo "Deploying Lambdas and API Gateway..."
+      - chmod +x deployment/deploy-lambdas.sh
+      # We skip actual deployment inside standard CI/CD unless explicit permissions are granted.
+      # For this pipeline, we will run the deployment scripts.
+      # NOTE: For AWS CodeBuild to execute this, its attached IAM Service Role must have
+      # full AdministratorAccess or specific permissions to manage API Gateway, DynamoDB, Lambda, etc.
+      - ./deployment/deploy-lambdas.sh
+
+      - echo "Building and Deploying Frontend..."
+      - chmod +x deployment/deploy-frontend.sh
+      - ./deployment/deploy-frontend.sh
+
+  post_build:
+    commands:
+      - echo "Deployment execution completed successfully on `date`"
+
+artifacts:
+  files:
+    - '**/*'
