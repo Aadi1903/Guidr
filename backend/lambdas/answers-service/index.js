@@ -12,6 +12,7 @@
  *   - Increments answerCount on Questions table
  */
 
+const AWSXRay = require('aws-xray-sdk-core');
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
@@ -22,16 +23,21 @@ const {
   QueryCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
 const { v4: uuidv4 } = require("uuid");
 
 const region = process.env.AWS_REGION || "us-east-1";
-const ddbClient = new DynamoDBClient({ region });
-const ddb = DynamoDBDocumentClient.from(ddbClient);
-const sqs = new SQSClient({ region });
 
-const ANSWERS_TABLE = process.env.ANSWERS_TABLE || "guidr-answers";
-const QUESTIONS_TABLE = process.env.QUESTIONS_TABLE || "guidr-questions";
-const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
+// Wrap clients with X-Ray for observability
+const ddbClient = AWSXRay.captureAWSv3Client(new DynamoDBClient({ region }));
+const ddb = DynamoDBDocumentClient.from(ddbClient);
+const sqs = AWSXRay.captureAWSv3Client(new SQSClient({ region }));
+const ssm = AWSXRay.captureAWSv3Client(new SSMClient({ region }));
+
+// Variables for configuration (cached across invocations)
+let ANSWERS_TABLE = process.env.ANSWERS_TABLE;
+let QUESTIONS_TABLE = process.env.QUESTIONS_TABLE;
+let SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
@@ -47,6 +53,24 @@ const response = (statusCode, body) => ({
 });
 
 exports.handler = async (event) => {
+  // Fetch configuration from SSM if not already cached
+  if (!ANSWERS_TABLE || !QUESTIONS_TABLE) {
+    try {
+      // Fetch multiple parameters if needed
+      const [answersTable, questionsTable] = await Promise.all([
+        ssm.send(new GetParameterCommand({ Name: '/guidr/config/ANSWERS_TABLE' })),
+        ssm.send(new GetParameterCommand({ Name: '/guidr/config/QUESTIONS_TABLE' }))
+      ]);
+      ANSWERS_TABLE = answersTable.Parameter.Value;
+      QUESTIONS_TABLE = questionsTable.Parameter.Value;
+      console.log(`[answers-service] Config loaded from SSM: ANSWERS=${ANSWERS_TABLE}, QUESTIONS=${QUESTIONS_TABLE}`);
+    } catch (err) {
+      console.warn("[answers-service] SSM fetch failed, falling back to defaults:", err.message);
+      ANSWERS_TABLE = ANSWERS_TABLE || "guidr-answers";
+      QUESTIONS_TABLE = QUESTIONS_TABLE || "guidr-questions";
+    }
+  }
+
   // Normalize event for different API Gateway versions (REST v1.0 vs HTTP v2.0)
   const method = (event.requestContext?.http?.method || event.httpMethod || "").toUpperCase();
   const path = event.rawPath || event.path || "";

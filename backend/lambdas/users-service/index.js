@@ -6,6 +6,7 @@
  * CloudWatch logging enabled via console.log (auto-captured by Lambda)
  */
 
+const AWSXRay = require('aws-xray-sdk-core');
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
@@ -15,12 +16,18 @@ const {
   ScanCommand,
   QueryCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
 
 // --- AWS SDK Setup ---
-const ddbClient = new DynamoDBClient({ region: process.env.AWS_REGION || "us-east-1" });
-const ddb = DynamoDBDocumentClient.from(ddbClient);
+const region = process.env.AWS_REGION || "us-east-1";
 
-const USERS_TABLE = process.env.USERS_TABLE || "guidr-users";
+// Wrap clients with X-Ray for observability
+const ddbClient = AWSXRay.captureAWSv3Client(new DynamoDBClient({ region }));
+const ddb = DynamoDBDocumentClient.from(ddbClient);
+const ssm = AWSXRay.captureAWSv3Client(new SSMClient({ region }));
+
+// Variables for configuration (cached across invocations)
+let USERS_TABLE = process.env.USERS_TABLE;
 
 // --- CORS Headers (required for API Gateway + React frontend) ---
 const CORS_HEADERS = {
@@ -39,6 +46,18 @@ const response = (statusCode, body) => ({
 
 // --- Handler ---
 exports.handler = async (event) => {
+  // Fetch configuration from SSM if not already cached
+  if (!USERS_TABLE) {
+    try {
+      const data = await ssm.send(new GetParameterCommand({ Name: '/guidr/config/USERS_TABLE' }));
+      USERS_TABLE = data.Parameter.Value;
+      console.log(`[users-service] Config loaded from SSM: ${USERS_TABLE}`);
+    } catch (err) {
+      console.warn("[users-service] SSM fetch failed, falling back to default:", err.message);
+      USERS_TABLE = USERS_TABLE || "guidr-users";
+    }
+  }
+
   // Normalize event for different API Gateway versions (REST v1.0 vs HTTP v2.0)
   const method = (event.requestContext?.http?.method || event.httpMethod || "").toUpperCase();
   const path = event.rawPath || event.path || "";

@@ -11,7 +11,7 @@
 
 ## 🏗 System Architecture & Cloud Infrastructure
 
-Guidr relies entirely on a modern, Serverless Microservices architecture hosted on AWS.
+Guidr relies entirely on a modern, Serverless Microservices architecture hosted on AWS, optimized for the **AWS Free Tier**.
 
 ```mermaid
 graph TD
@@ -84,6 +84,17 @@ graph TD
     Q -->|Triggers| L_Notif
     L_Notif -->|Fan-out| Topic
     Topic -.->|Emails| Client
+
+    %% Observability
+    subgraph Observability
+        XR[AWS X-Ray Tracing]
+        RUM[CloudWatch RUM]
+        CW[CloudWatch Dashboards]
+    end
+
+    Client -.->|Telemetry| RUM
+    MicroservicesLayer -.->|Traces| XR
+    API Routing -.->|Traces| XR
 ```
 
 ---
@@ -175,5 +186,7 @@ _(All routes implement CORS `OPTIONS` handlers allowing wildcard Origins for rob
 
 Currently deployed in a production-ready state:
 - **CDN**: CloudFront `https://d3k03ku5qbyly4.cloudfront.net`
+- **Observability**: CloudWatch RUM & X-Ray (Active)
+- **Config**: SSM Parameter Store (Managed)
 - **Region**: `us-east-1` (N. Virginia)
 - **Account**: `535002889870`

@@ -6,6 +6,7 @@
  * Publishes to SQS when a new question is created
  */
 
+const AWSXRay = require('aws-xray-sdk-core');
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
@@ -15,16 +16,21 @@ const {
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
 const { v4: uuidv4 } = require("uuid");
 
 // --- AWS SDK Setup ---
 const region = process.env.AWS_REGION || "us-east-1";
-const ddbClient = new DynamoDBClient({ region });
-const ddb = DynamoDBDocumentClient.from(ddbClient);
-const sqs = new SQSClient({ region });
 
-const QUESTIONS_TABLE = process.env.QUESTIONS_TABLE || "guidr-questions";
-const SQS_QUEUE_URL = process.env.SQS_QUEUE_URL; // Set from environment variable
+// Wrap clients with X-Ray for observability
+const ddbClient = AWSXRay.captureAWSv3Client(new DynamoDBClient({ region }));
+const ddb = DynamoDBDocumentClient.from(ddbClient);
+const sqs = AWSXRay.captureAWSv3Client(new SQSClient({ region }));
+const ssm = AWSXRay.captureAWSv3Client(new SSMClient({ region }));
+
+// Variables for configuration (cached across invocations)
+let QUESTIONS_TABLE = process.env.QUESTIONS_TABLE;
+let SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
@@ -41,6 +47,18 @@ const response = (statusCode, body) => ({
 
 // --- Handler ---
 exports.handler = async (event) => {
+  // Fetch configuration from SSM if not already cached
+  if (!QUESTIONS_TABLE) {
+    try {
+      const data = await ssm.send(new GetParameterCommand({ Name: '/guidr/config/QUESTIONS_TABLE' }));
+      QUESTIONS_TABLE = data.Parameter.Value;
+      console.log(`[questions-service] Config loaded from SSM: ${QUESTIONS_TABLE}`);
+    } catch (err) {
+      console.warn("[questions-service] SSM fetch failed, falling back to default:", err.message);
+      QUESTIONS_TABLE = "guidr-questions";
+    }
+  }
+
   // Normalize event for different API Gateway versions (REST v1.0 vs HTTP v2.0)
   const method = (event.requestContext?.http?.method || event.httpMethod || "").toUpperCase();
   const path = event.rawPath || event.path || "";

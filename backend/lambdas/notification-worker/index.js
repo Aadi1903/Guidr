@@ -9,18 +9,35 @@
  * SQS → Lambda → SNS → SES (email)
  */
 
+const AWSXRay = require('aws-xray-sdk-core');
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
 const { SESClient, SendEmailCommand } = require("@aws-sdk/client-ses");
+const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
 
 const region = process.env.AWS_REGION || "us-east-1";
-const sns = new SNSClient({ region });
-const ses = new SESClient({ region });
 
-const SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN;
-const SES_FROM_EMAIL = process.env.SES_FROM_EMAIL || "noreply@guidr.app";
+// Wrap clients with X-Ray for observability
+const sns = AWSXRay.captureAWSv3Client(new SNSClient({ region }));
+const ses = AWSXRay.captureAWSv3Client(new SESClient({ region }));
+const ssm = AWSXRay.captureAWSv3Client(new SSMClient({ region }));
+
+// Variables for configuration (cached across invocations)
+let SNS_TOPIC_ARN = process.env.SNS_TOPIC_ARN;
+let SES_FROM_EMAIL = process.env.SES_FROM_EMAIL || "noreply@guidr.app";
 
 // --- Main Handler: triggered by SQS ---
 exports.handler = async (event) => {
+  // Fetch configuration from SSM if SNS_TOPIC_ARN is missing
+  if (!SNS_TOPIC_ARN) {
+    try {
+      const data = await ssm.send(new GetParameterCommand({ Name: '/guidr/config/SNS_TOPIC_ARN' }));
+      SNS_TOPIC_ARN = data.Parameter.Value;
+      console.log(`[notification-worker] Config loaded from SSM: ${SNS_TOPIC_ARN}`);
+    } catch (err) {
+      console.warn("[notification-worker] SSM fetch failed for SNS_TOPIC_ARN:", err.message);
+    }
+  }
+
   console.log("[notification-worker] SQS Event:", JSON.stringify(event, null, 2));
 
   const results = [];

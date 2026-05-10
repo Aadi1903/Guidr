@@ -13,18 +13,24 @@
  *   POST /auth/profile → Create profile (manual, for first-time users)
  */
 
+const AWSXRay = require('aws-xray-sdk-core');
 const { DynamoDBClient } = require("@aws-sdk/client-dynamodb");
 const {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
 } = require("@aws-sdk/lib-dynamodb");
+const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
 
 const region = process.env.AWS_REGION || "us-east-1";
-const ddbClient = new DynamoDBClient({ region });
-const ddb = DynamoDBDocumentClient.from(ddbClient);
 
-const USERS_TABLE = process.env.USERS_TABLE || "guidr-users";
+// Wrap clients with X-Ray for observability
+const ddbClient = AWSXRay.captureAWSv3Client(new DynamoDBClient({ region }));
+const ddb = DynamoDBDocumentClient.from(ddbClient);
+const ssm = AWSXRay.captureAWSv3Client(new SSMClient({ region }));
+
+// Variables for configuration (cached across invocations)
+let USERS_TABLE = process.env.USERS_TABLE;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
@@ -40,6 +46,18 @@ const response = (statusCode, body) => ({
 });
 
 exports.handler = async (event) => {
+  // Fetch configuration from SSM if not already cached
+  if (!USERS_TABLE) {
+    try {
+      const data = await ssm.send(new GetParameterCommand({ Name: '/guidr/config/USERS_TABLE' }));
+      USERS_TABLE = data.Parameter.Value;
+      console.log(`[auth-service] Config loaded from SSM: ${USERS_TABLE}`);
+    } catch (err) {
+      console.warn("[auth-service] SSM fetch failed, falling back to default:", err.message);
+      USERS_TABLE = USERS_TABLE || "guidr-users";
+    }
+  }
+
   console.log("[auth-service] Event:", JSON.stringify(event, null, 2));
 
   // ======================================================
