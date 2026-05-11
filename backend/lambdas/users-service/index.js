@@ -17,6 +17,7 @@ const {
   QueryCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
+const { RekognitionClient, DetectModerationLabelsCommand } = require("@aws-sdk/client-rekognition");
 
 // --- AWS SDK Setup ---
 const region = process.env.AWS_REGION || "us-east-1";
@@ -25,9 +26,11 @@ const region = process.env.AWS_REGION || "us-east-1";
 const ddbClient = AWSXRay.captureAWSv3Client(new DynamoDBClient({ region }));
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 const ssm = AWSXRay.captureAWSv3Client(new SSMClient({ region }));
+const rekognition = AWSXRay.captureAWSv3Client(new RekognitionClient({ region }));
 
 // Variables for configuration (cached across invocations)
 let USERS_TABLE = process.env.USERS_TABLE;
+let MODERATION_THRESHOLD = 70; // Default confidence percentage
 
 // --- CORS Headers (required for API Gateway + React frontend) ---
 const CORS_HEADERS = {
@@ -215,4 +218,38 @@ const updateUser = async (userId, data) => {
   );
 
   return response(200, { message: "Profile updated successfully", userId });
+};
+
+/**
+ * Helper: AI Moderation Check
+ * Uses Rekognition to check if an image in S3 is safe.
+ * (Can be integrated once S3 uploads are implemented)
+ */
+const checkImageSafety = async (bucket, key) => {
+  console.log(`[users-service] Running AI moderation for s3://${bucket}/${key}`);
+  
+  try {
+    const command = new DetectModerationLabelsCommand({
+      Image: {
+        S3Object: {
+          Bucket: bucket,
+          Name: key
+        }
+      },
+      MinConfidence: MODERATION_THRESHOLD
+    });
+
+    const result = await rekognition.send(command);
+    
+    if (result.ModerationLabels && result.ModerationLabels.length > 0) {
+      console.warn(`[users-service] AI detected inappropriate content:`, result.ModerationLabels);
+      return { safe: false, labels: result.ModerationLabels };
+    }
+
+    return { safe: true };
+  } catch (err) {
+    console.error("[users-service] AI Moderation failed:", err.message);
+    // Default to safe or unsafe depending on policy
+    return { safe: true, error: err.message };
+  }
 };

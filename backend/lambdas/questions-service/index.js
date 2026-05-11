@@ -16,6 +16,7 @@ const {
   UpdateCommand,
 } = require("@aws-sdk/lib-dynamodb");
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
+const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
 const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm");
 const { v4: uuidv4 } = require("uuid");
 
@@ -27,10 +28,12 @@ const ddbClient = AWSXRay.captureAWSv3Client(new DynamoDBClient({ region }));
 const ddb = DynamoDBDocumentClient.from(ddbClient);
 const sqs = AWSXRay.captureAWSv3Client(new SQSClient({ region }));
 const ssm = AWSXRay.captureAWSv3Client(new SSMClient({ region }));
+const eventbridge = AWSXRay.captureAWSv3Client(new EventBridgeClient({ region }));
 
 // Variables for configuration (cached across invocations)
 let QUESTIONS_TABLE = process.env.QUESTIONS_TABLE;
 let SQS_QUEUE_URL = process.env.SQS_QUEUE_URL;
+let EVENT_BUS_NAME = process.env.EVENT_BUS_NAME || "guidr-event-bus";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": process.env.FRONTEND_URL || "*",
@@ -150,6 +153,28 @@ const createQuestion = async (authorId, authorEmail, data) => {
       })
     );
     console.log(`[questions-service] SQS message sent for question: ${questionId}`);
+  }
+
+  // --- Publish to EventBridge for global event-driven architecture ---
+  try {
+    const entry = {
+      Source: "guidr.questions",
+      DetailType: "QuestionCreated",
+      Detail: JSON.stringify({
+        questionId,
+        authorId,
+        authorEmail,
+        title,
+        createdAt,
+      }),
+      EventBusName: EVENT_BUS_NAME,
+    };
+
+    await eventbridge.send(new PutEventsCommand({ Entries: [entry] }));
+    console.log(`[questions-service] EventBridge event published for question: ${questionId}`);
+  } catch (err) {
+    console.error("[questions-service] Failed to publish to EventBridge:", err.message);
+    // We don't fail the request if EventBridge is down
   }
 
   return response(201, { message: "Question created successfully", question: item });
